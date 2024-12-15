@@ -6,9 +6,10 @@ from scipy.optimize import minimize
 from collections import defaultdict
 import json
 import os
+import sys
+sys.setrecursionlimit(5000)
 
-# Import TREEFARMS correctly
-from treefarms import TREEFARMS  # Ensure correct case and class name
+from treefarms import TREEFARMS
 
 class StackedRashomon:
     """
@@ -107,7 +108,7 @@ class StackedRashomon:
             "look_ahead": True,
             "diagnostics": False,
             "verbose": self.verbose,
-            # Add other default parameters as needed
+            # TBD
         }
         return default_config
 
@@ -162,6 +163,7 @@ class StackedRashomon:
                 break  # No more models to select
 
         selected_models = [models[idx] for idx in selected_indices]
+        #print(f"Selected Models: {selected_models}")
         return selected_models
 
     def _train_metamodel(self, P, y):
@@ -266,6 +268,59 @@ class StackedRashomon:
                 print(f"Weights for class {classes[c]}: {result.x}")
 
         return weights, classes
+    
+
+    def _validate_tree(self, tree, X, i):
+        """
+        Validate a tree model from TREEFARMS to ensure it's usable.
+        
+        Parameters:
+        - tree: The tree model to validate
+        - X: Sample data for prediction
+        - i: Tree index for logging
+        
+        Returns:
+        - bool: Whether the tree is valid
+        """
+        try:
+            if tree is None:
+                if self.verbose:
+                    print(f"Tree {i} is None")
+                return False
+                
+            # Check if it's a valid tree object
+            if not hasattr(tree, 'predict'):
+                if self.verbose:
+                    print(f"Tree {i} lacks predict method")
+                return False
+                
+            # Try to get a prediction on first row
+            sample = X.iloc[[0]]
+            pred = tree.predict(sample)
+            
+            if pred is None:
+                if self.verbose:
+                    print(f"Tree {i} returned None prediction")
+                return False
+                
+            # Check if prediction shape is valid
+            if not isinstance(pred, (np.ndarray, list)) or len(pred) == 0:
+                if self.verbose:
+                    print(f"Tree {i} returned invalid prediction shape")
+                return False
+            
+            if len(pred) != len(pred):
+                return False
+                
+            if self.verbose:
+                print(f"Tree {i} validated successfully - Sample prediction: {pred}")
+                
+            return True
+            
+        except Exception as e:
+            if self.verbose:
+                print(f"Error validating tree {i}: {str(e)}")
+            return False
 
     def _fetch_rashomon_set(self, X, y):
         """
@@ -315,9 +370,8 @@ class StackedRashomon:
             print(f"Number of trees in the Rashomon set: {n_trees}")
         for i in range(n_trees):
             tree = tf[i]
-            models.append(tree)
-            #if self.verbose and i < 5:  # Print first few trees for verbosity
-            #    print(f"Retrieved tree {i}: {tree}")
+            if self._validate_tree(tree, X, i):
+                models.append(tree)
 
         if self.verbose:
             print(f"Total {len(models)} models retrieved from the Rashomon set.")
@@ -400,7 +454,6 @@ class StackedRashomon:
             else:
                 X_layer2_df = pd.DataFrame(self.layer2_X)
 
-            # Get predictions from base models on layer2 data
             P_layer2 = np.array([model.predict(X_layer2_df) for model in self.selected_models]).T  # Shape: (n_samples_layer2, n_models)
             metamodel_X = P_layer2
             metamodel_y = self.layer2_y.values
@@ -410,6 +463,8 @@ class StackedRashomon:
             # **Do not call fit on the models from Rashomon set as they are already trained**
             # Directly use pre-trained models to predict on all data
             # Ensure X is a pandas DataFrame
+            # print(f"Type of X: {type(X)}")
+            # print(f"Sample of X: {X[:5]}")
             if isinstance(X, np.ndarray):
                 X_df = pd.DataFrame(X, columns=[f"feature_{i}" for i in range(X.shape[1])])
             elif isinstance(X, pd.Series):
@@ -528,11 +583,9 @@ class StackedRashomon:
         """
         return self.class_weights
 
-# Import necessary libraries for usage
-from sklearn.datasets import fetch_california_housing, load_iris  # load_boston is deprecated
+from sklearn.datasets import fetch_california_housing, load_iris
 from sklearn.metrics import mean_squared_error, accuracy_score
 
-# Suppress warnings for deprecated datasets
 import warnings
 warnings.filterwarnings("ignore", category=FutureWarning)
 
@@ -554,23 +607,21 @@ y_cls = pd.Series(y_cls, name="target")
 ensemble_cls = StackedRashomon(
     margin=0.005,
     num_base_models='all',
-    split_data=True,
+    split_data=False,
     test_split_ratio=0.3,
     prediction_type='classification',
     round_predictions=False,  # Not used for classification
     lambda_reg=1.0,
     random_state=42,
-    # Pass additional TREEFARMS parameters if needed
-    # e.g., depth_budget=3
 )
 
 # Fit the ensemble
 ensemble_cls.fit(X_cls, y_cls)
 
-# Make predictions on the training data (or any test set)
+# Make predictions on the training data
 y_pred_cls = ensemble_cls.predict(X_cls)
 
-# Evaluate the classification performance
+# Evaluate the classification performance on the training data
 accuracy = accuracy_score(y_cls, y_pred_cls)
 print(f"Classification Accuracy: {accuracy:.4f}")
 
@@ -600,16 +651,11 @@ ensemble_reg = StackedRashomon(
     round_predictions=False,
     lambda_reg=1.0,
     random_state=42,
-    # Pass additional TREEFARMS parameters if needed
-    # e.g., depth_budget=3
 )
 
-# Fit the ensemble
 ensemble_reg.fit(X_reg, y_reg)
 
-# Make predictions on the training data (or any test set)
 y_pred_reg = ensemble_reg.predict(X_reg)
 
-# Evaluate the regression performance
 mse = mean_squared_error(y_reg, y_pred_reg)
 print(f"Regression Mean Squared Error: {mse:.4f}")
